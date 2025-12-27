@@ -1,0 +1,70 @@
+-- TABELA USUÁRIOS
+CREATE TABLE usuarios (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  email VARCHAR(255) UNIQUE NOT NULL,
+  username VARCHAR(50) UNIQUE NOT NULL,
+  password VARCHAR(100) NOT NULL,
+  youtube_id VARCHAR(100) NOT NULL,
+  expires_at TIMESTAMP NOT NULL,
+  is_active BOOLEAN DEFAULT false,
+  device_id VARCHAR(255),
+  device_fingerprint TEXT,
+  last_login TIMESTAMP,
+  login_count INTEGER DEFAULT 0,
+  is_locked BOOLEAN DEFAULT false,
+  lock_reason VARCHAR(100),
+  payment_id VARCHAR(100),
+  created_at TIMESTAMP DEFAULT now()
+);
+
+-- TABELA PAGAMENTOS
+CREATE TABLE pagamentos (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  usuario_id UUID REFERENCES usuarios(id),
+  payment_id VARCHAR(100) UNIQUE NOT NULL,
+  status VARCHAR(50) NOT NULL,
+  amount DECIMAL(10,2) NOT NULL,
+  customer_email VARCHAR(255) NOT NULL,
+  product_id VARCHAR(100),
+  gateway VARCHAR(50) DEFAULT 'tribopay',
+  created_at TIMESTAMP DEFAULT now()
+);
+
+-- TABELA LOGS
+CREATE TABLE logs_acesso (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  usuario_id UUID REFERENCES usuarios(id),
+  ip_address VARCHAR(45),
+  user_agent TEXT,
+  device_id VARCHAR(255),
+  success BOOLEAN DEFAULT false,
+  created_at TIMESTAMP DEFAULT now()
+);
+
+-- ÍNDICES
+CREATE INDEX idx_usuarios_email ON usuarios(email);
+CREATE INDEX idx_usuarios_username ON usuarios(username);
+CREATE INDEX idx_usuarios_active ON usuarios(is_active);
+CREATE INDEX idx_pagamentos_status ON pagamentos(status);
+
+-- FUNÇÃO GERAR USUÁRIO
+CREATE OR REPLACE FUNCTION gerar_usuario_unico(youtube_id_param VARCHAR)
+RETURNS TABLE (
+  username VARCHAR,
+  password VARCHAR
+) AS $$
+DECLARE
+  novo_username VARCHAR;
+  nova_senha VARCHAR;
+BEGIN
+  -- Gerar username único
+  novo_username := 'USER' || LPAD((EXTRACT(EPOCH FROM NOW())::BIGINT % 1000000)::TEXT, 6, '0') || 
+                   SUBSTRING(MD5(RANDOM()::TEXT), 1, 3);
+  
+  -- Gerar senha segura
+  nova_senha := SUBSTRING(MD5(RANDOM()::TEXT), 1, 8) || 
+                SUBSTRING('!@#$%&*', (RANDOM()*7)::INTEGER + 1, 1);
+  
+  RETURN QUERY SELECT novo_username, nova_senha;
+END;
+$$ LANGUAGE plpgsql;

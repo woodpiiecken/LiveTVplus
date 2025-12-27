@@ -1,0 +1,206 @@
+// Este é um servidor Node.js simples para processar webhooks
+// Salve como server.js e rode: node server.js
+
+const express = require('express');
+const cors = require('cors');
+const { createClient } = require('@supabase/supabase-js');
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+// Configuração do Supabase
+const supabaseUrl = 'SUA_URL_SUPABASE';
+const supabaseKey = 'SUA_CHAVE_SERVICE_ROLE'; // Use Service Role Key, não Anon Key!
+const supabase = createClient(supabaseUrl, supabaseKey);
+
+// Rota para webhook do Mercado Pago
+app.post('/api/mercadopago-webhook', async (req, res) => {
+  try {
+    const paymentData = req.body;
+    
+    console.log('Webhook recebido:', {
+      id: paymentData.data?.id,
+      type: paymentData.type,
+      status: paymentData.data?.status
+    });
+
+    // Verificar autenticação (opcional - Mercado Pago envia headers)
+    const signature = req.headers['x-signature'];
+    // Validar assinatura aqui se quiser
+
+    // Salvar no banco
+    const { error } = await supabase
+      .from('mercadopago_webhooks')
+      .insert({
+        data: paymentData
+      });
+
+    if (error) {
+      console.error('Erro ao salvar webhook:', error);
+      return res.status(500).json({ error: 'Erro interno' });
+    }
+
+    // Se for pagamento aprovado, buscar external_reference
+    if (paymentData.type === 'payment' && paymentData.data?.status === 'approved') {
+      const externalRef = paymentData.data.external_reference;
+      
+      if (externalRef) {
+        const [username, youtubeId, email] = externalRef.split(':');
+        
+        // Ativar usuário
+        const { error: updateError } = await supabase
+          .from('usuarios')
+          .update({
+            is_active: true,
+            payment_status: 'approved',
+            payment_id: paymentData.data.id,
+            approved_at: new Date().toISOString()
+          })
+          .eq('username', username);
+
+        if (!updateError) {
+          console.log(`✅ Usuário ${username} ativado com sucesso!`);
+          
+          // Enviar email com credenciais (integre com seu serviço de email)
+          await enviarEmailCredenciais(username, email);
+        }
+      }
+    }
+
+    res.status(200).json({ received: true });
+  } catch (error) {
+    console.error('Erro no webhook:', error);
+    res.status(500).json({ error: 'Erro interno' });
+  }
+});
+
+// Rota para criar usuário (usada pela página de pagamento)
+app.post('/api/criar-usuario', async (req, res) => {
+  try {
+    const { youtubeId, email } = req.body;
+    
+    // Gerar username único
+    const username = gerarUsernameUnico();
+    const password = gerarSenhaSegura();
+    
+    const expiraEm = new Date();
+    expiraEm.setDate(expiraEm.getDate() + 7);
+    
+    // Criar usuário no banco
+    const { data, error } = await supabase
+      .from('usuarios')
+      .insert({
+        username,
+        password,
+        youtube_id: youtubeId,
+        email: email,
+        expires_at: expiraEm.toISOString(),
+        is_active: false,
+        payment_status: 'pending'
+      })
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    res.json({
+      success: true,
+      usuario: {
+        username,
+        password,
+        expires_at: expiraEm.toISOString()
+      }
+    });
+
+  } catch (error) {
+    console.error('Erro ao criar usuário:', error);
+    res.status(500).json({ success: false, message: 'Erro ao criar usuário' });
+  }
+});
+
+// Funções auxiliares
+function gerarUsernameUnico() {
+  const prefixo = 'CL';
+  const timestamp = Date.now().toString(36).toUpperCase();
+  const random = Math.random().toString(36).substring(2, 5).toUpperCase();
+  return `${prefixo}${timestamp}${random}`;
+}
+
+function gerarSenhaSegura() {
+  const letras = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
+  const numeros = '0123456789';
+  const especiais = '!@#$%&*';
+  
+  let senha = '';
+  
+  // 6 letras
+  for (let i = 0; i < 6; i++) {
+    senha += letras.charAt(Math.floor(Math.random() * letras.length));
+  }
+  
+  // 2 números
+  for (let i = 0; i < 2; i++) {
+    senha += numeros.charAt(Math.floor(Math.random() * numeros.length));
+  }
+  
+  // 1 especial
+  senha += especiais.charAt(Math.floor(Math.random() * especiais.length));
+  
+  // Embaralhar
+  return senha.split('').sort(() => Math.random() - 0.5).join('');
+}
+
+// Função para enviar email (exemplo - integre com seu serviço)
+async function enviarEmailCredenciais(username, email) {
+  // Buscar senha do banco
+  const { data } = await supabase
+    .from('usuarios')
+    .select('password')
+    .eq('username', username)
+    .single();
+
+  if (!data) return;
+
+  // Aqui você integraria com SendGrid, AWS SES, etc.
+  console.log(`📧 Email enviado para ${email}:`);
+  console.log(`Usuário: ${username}`);
+  console.log(`Senha: ${data.password}`);
+  
+  // Exemplo com fetch para um serviço de email:
+  /*
+  await fetch('https://api.sendgrid.com/v3/mail/send', {
+    method: 'POST',
+    headers: {
+      'Authorization': 'Bearer SUA_CHAVE_SENDGRID',
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      personalizations: [{
+        to: [{ email: email }]
+      }],
+      from: { email: 'suporte@reidalive.com' },
+      subject: 'Suas Credenciais - ReidaLive',
+      content: [{
+        type: 'text/html',
+        value: `
+          <h1>Seu acesso foi liberado! 🎉</h1>
+          <p><strong>Usuário:</strong> ${username}</p>
+          <p><strong>Senha:</strong> ${data.password}</p>
+          <p>Acesse: https://reidalive.com/login</p>
+        `
+      }]
+    })
+  });
+  */
+}
+
+// Rota de health check
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'online', timestamp: new Date().toISOString() });
+});
+
+const PORT = process.env.PORT || 3001;
+app.listen(PORT, () => {
+  console.log(`🚀 Servidor webhook rodando na porta ${PORT}`);
+});
